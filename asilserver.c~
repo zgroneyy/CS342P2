@@ -1,0 +1,228 @@
+/*
+** Özgür Öney
+** CS342 Project 2
+** Assoc. Prof. Özcan Öztürk
+** 21101821
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <mqueue.h>
+#include <unistd.h>
+#include <errno.h> 
+#include "shared.h"
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+
+#include <signal.h>
+
+#define sm_name "/shared_mem" 
+#define INC 0
+#define DEC 1
+#define GET 2
+
+int linecontains(char* line, char* keyword)
+{
+
+	char* result = strstr(line,keyword);//If line contains, return 
+
+	if(result == NULL)
+		return 0;
+
+	return 1;
+
+}
+
+void assignChild(struct server_item* iPtr)
+{
+	int n;
+	int pidID = fork();
+	if(pidID < 0)
+	{
+		perror("SERVER: fork failed: ");
+		exit(EXIT_FAILURE);
+	}
+	else if(pidID>0)
+	{
+		//If parent...
+		return;
+	}
+
+	else
+	{
+		fprintf(stdout,"SERVER: A new child ( %d )\n", getpid());
+		mqd_t c_mq = mq_open(iPtr->client_queue_name, O_RDWR);
+		if(c_mq == -1)
+		{
+			perror("cannot open client message queue\n");
+			exit(1);
+		}
+		else
+			fprintf(stdout,"SERVER: Client mq %s is opened by child\n", iPtr->client_queue_name);
+
+		FILE *file = fopen ( iPtr->filename, "r" );
+		if ( file != NULL )
+	    	{
+			//childrenAmountOperation(INC);
+			char line [ 512 ];
+			while ( fgets ( line, sizeof line, file ) != NULL ) 
+			{
+				if(linecontains(line,iPtr->keyword))
+				{
+					struct client_item item;
+					item.eof = 0;
+					strcpy(item.line, line);
+					n = mq_send(c_mq, (char*) &item, sizeof(struct client_item), 0);
+
+					if(n==-1)
+					{
+						perror("send to client message queue failed\n");
+						mq_close(c_mq);
+						mq_unlink(iPtr->client_queue_name);
+						exit(1);
+						
+					}
+				}
+			}
+			fclose ( file );
+
+			struct client_item item;
+			item.eof = 1;
+
+			//open the clint que with the unique name
+			n = mq_send(c_mq, (char*) &item, sizeof(struct client_item), 0);
+
+			if(n==-1)
+			{
+				perror("send to client message queue failed\n");
+				//childrenAmountOperation(DEC);
+				exit(1);
+			}
+
+		 }
+		else
+	        {
+			perror ( iPtr->filename );
+			mq_close(c_mq);
+			mq_unlink(iPtr->client_queue_name);
+			exit(1);
+
+		}
+		//mq_close(c_mq);
+		mq_unlink(iPtr->client_queue_name);
+		exit(0);
+	}
+}
+
+int main(int argc, char* argv[])
+{
+	clock_t start = clock();
+
+	//argv[0] reserved for program name, so argv[1] will be our keyword
+	char* keyword=argv[1];
+	int N;
+	
+	//N will be entered command line as a char*, needed to be typecast into an integer.
+	N=atoi(argv[2]);
+	
+	//Initialization of first node of list of files.
+	FileNode* head; 
+	head=(FileNode*)malloc(sizeof(struct FileNode));
+	head->filename=argv[3];
+	head->next=NULL;
+	
+	//A FileNode pointer to go through the list.
+	FileNode* curr;
+	curr=head;
+	//Here, we are getting the names of input files from commandline.
+	int i;
+	for(i=1;i<N;i++)
+	{
+		FileNode* newFile=(FileNode*)malloc(sizeof(struct FileNode));
+		//argv[0],argv[1] & argv[2] are separated from other attributes. Should start with 3 and go through 3+N-1
+		int j=3+i;
+		newFile->filename=argv[j];
+		newFile->tempfile = NULL;
+		curr->next=newFile;
+		newFile->next=NULL;
+		curr=curr->next;
+	}
+
+	FileNode* curr2;
+	curr2=head;
+	
+	//Here, main process forks N times into separate children. 
+	pid_t pid;
+	while(curr2!=NULL)
+	{
+		curr2->tempfile = tmpfile();
+		
+		pid = fork();
+		//Process id of children cannot be less than 0; if it could, well there is an error.
+		if (pid < 0)
+		{
+			exit(EXIT_FAILURE);
+		}
+		//pid=0 indicates we have succesfully created our child process.
+		else if(pid == 0)
+		{
+			//I'm child and here to work.
+			assignChild(curr2->filename,keyword,curr2->tempfile);
+			exit(0);
+		}
+		
+		curr2=curr2->next;
+	}
+	//We have to wait until we close all child processes. 
+	while(wait(NULL) > 0);
+	
+	curr2 = head;
+	char word[BUFFER_LENGTH];
+	//Dummy is created as NOT a pointer to escape from malloc. Dummy is used as list of lines in a tempfile. 
+	LineNode dummy;
+	LineNode* cur = &dummy;
+	
+	while (curr2 != NULL)
+	{
+		FILE* tempfile = curr2->tempfile;
+		rewind(tempfile);
+		int index = 0;
+		
+		while (1)
+		{
+		    int ch;
+			//Read line char by char
+			while((ch = fgetc(tempfile)) != '\n' && ch != -1 && index < BUFFER_LENGTH)
+			{
+				word[index++] = ch;
+			}
+			word[index] = '\0';
+			index = 0;
+			//If you see an empty line
+			if (word[0] != '\0')
+			{
+				//printf("%s\n",word);
+				LineNode* newnode=(LineNode*)malloc(sizeof(struct LineNode));
+				strcpy(newnode->line,word);
+				cur->next=newnode;
+				newnode->next=NULL;
+				cur=cur->next;
+			}
+			//End of tempfile.
+			if (feof(tempfile))
+				break;
+		}
+		//Close tempfile and go through File's linked list. 
+		fclose(curr2->tempfile);
+		curr2->tempfile = NULL;
+		curr2 = curr2->next;
+	}
+	//SORT
+	bubblesort(&dummy.next);
+	writeOutputFile(argv[N + 3],dummy.next);
+	clock_t end = clock();
+	float seconds = (float)(end - start) / CLOCKS_PER_SEC;
+	printf ("Program lasts: %f\n", seconds);
+}

@@ -1,0 +1,114 @@
+/*
+** Özgür Öney
+** CS342 Project 2
+** Assoc. Prof. Özcan Öztürk
+** 21101821
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <mqueue.h>
+#include <unistd.h>
+#include <errno.h> 
+
+#include "shared.h"
+
+
+int main(int argc, char **argv)
+{
+
+	
+	char sqname[128];
+	char filename[128];
+	char keyword[64];
+	mqd_t mq, c_mq;
+
+	char *bufptr;
+	struct mq_attr mq_attr;
+	int buflen;
+	int n;
+
+	struct client_item *iPtr;
+	
+	if(argc != 4)
+	{
+		perror("PLEASE USE: client <sqname> <filename> <keyword>\n");
+		exit(1);
+	}	
+
+	strcpy(sqname, argv[1]);
+	strcpy(filename, argv[2]);
+	strcpy(keyword, argv[3]);
+	
+	mq = mq_open(sqname, O_RDWR);
+	if(mq == -1)
+	{
+		perror("cannot open the message queue\n");
+		exit(1);
+	}
+
+	//create unique client queue name
+	char client_queue_name[200] = "/cqueue_";
+	char pidstr[10];
+	sprintf(pidstr, "%d", getpid());
+	strcat(client_queue_name,pidstr);
+
+	//printf("::::%s::::\n",client_queue_name);
+	c_mq = mq_open(client_queue_name, O_RDWR | O_CREAT, 0666, NULL);
+	if(c_mq == -1)
+	{
+		perror("cannot open the client message queue\n");
+		exit(1);
+	}
+	
+	mq_getattr(mq, &mq_attr);
+	buflen = mq_attr.mq_msgsize;
+	bufptr = (char *) malloc(buflen); 
+
+	//printf("client message que opened with the id: %d\n",(int)mq);
+	
+
+	struct server_item item;
+	strcpy(item.filename, filename); 
+	strcpy(item.keyword, keyword);
+	strcpy(item.client_queue_name, client_queue_name);
+
+	//open the clint que with the unique name
+	
+
+	n = mq_send(mq, (char*) &item, sizeof(struct server_item), 0);
+
+	if(n==-1)
+	{
+		perror("send to message queue failed\n");
+		exit(1);
+	}
+
+	fprintf(stderr, "successful mq_send from client %d\n",getpid());
+
+	while(1)
+	{
+		n = mq_receive(c_mq, (char*) bufptr, buflen, NULL);
+
+		if(n==-1)
+		{
+			perror("recieve to client message queue failed\n");
+			exit(1);
+		}
+
+		iPtr = (struct client_item *) bufptr;
+
+		if(iPtr->eof)
+			break;
+	
+		printf("%s",iPtr->line);
+	}
+
+		fprintf(stderr,"Successfull end");
+		mq_close(mq);
+		mq_unlink(client_queue_name);
+	
+
+	return 0;
+}
